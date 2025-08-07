@@ -1,0 +1,56 @@
+"""
+Basic Gaussian Beam Propagation
+Reference: Saleh & Teich Fundamentals of Photonics, Chapter 3
+"""
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Initialize parameters with explanations
+wavelength = 1550e-9  # 1550 nm - standard telecom wavelength (low fiber attenuation)
+beam_waist = 50e-6    # 50 μm beam waist (typical for integrated photonics)
+distance = 0.1        # 10 cm propagation distance
+x_points = 500        # Spatial resolution
+
+# Create coordinate system
+x = np.linspace(-200e-6, 200e-6, x_points)  # ±200 μm field of view
+
+# Gaussian beam function (complex field)
+def gaussian_beam(x, z, w0, wavelength):
+    k = 2*np.pi/wavelength  # Wave number
+    z_r = np.pi*w0**2/wavelength  # Rayleigh range (diffraction scale)
+    
+    # Complex beam parameter
+    w_z = w0 * np.sqrt(1 + (z/z_r)**2)      # Beam width at z
+    R_z = z * (1 + (z_r/z)**2)              # Wavefront radius
+    psi = np.arctan(z/z_r)                   # Gouy phase shift
+    
+    # Electric field
+    amplitude = w0/w_z * np.exp(-(x**2)/(w_z**2))
+    phase = np.exp(-1j*(k*z + k*x**2/(2*R_z) - psi))
+    
+    return amplitude * phase
+
+# Calculate beam at different propagation distances
+z_positions = [0, 0.05, 0.1]  # Start, middle, end
+fields = {}
+
+for z in z_positions:
+    fields[z] = gaussian_beam(x, z, beam_waist, wavelength)
+
+# Visualization
+plt.figure(figsize=(12, 8))
+for i, z in enumerate(z_positions):
+    plt.subplot(2, 3, i+1)
+    plt.plot(x*1e6, np.abs(fields[z])**2, 'b-')
+    plt.title(f'z = {z*100:.1f} cm')
+    plt.xlabel('x (μm)')
+    plt.ylabel('Intensity')
+    
+    plt.subplot(2, 3, i+4)
+    plt.plot(x*1e6, np.angle(fields[z]), 'r-')
+    plt.xlabel('x (μm)')
+    plt.ylabel('Phase (rad)')
+
+plt.tight_layout()
+plt.suptitle('Gaussian Beam Propagation', y=1.02)
+plt.show()
