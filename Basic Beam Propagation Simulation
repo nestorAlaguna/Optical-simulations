@@ -9,10 +9,13 @@ import matplotlib.pyplot as plt
 wavelength = 1550e-9  # 1550 nm - standard telecom wavelength (low fiber attenuation)
 beam_waist = 50e-6    # 50 μm beam waist (typical for integrated photonics)
 distance = 0.1        # 10 cm propagation distance
+x_range = 200e-6      # +-200 μm field of view
 x_points = 500        # Spatial resolution
+z_positions = [0, 0.05, 0.1]  # Start, middle, end
+fields = {}
 
 # Create coordinate system
-x = np.linspace(-200e-6, 200e-6, x_points)  # ±200 μm field of view
+x = np.linspace(-x_range, x_range, 500)
 
 # Gaussian beam function (complex field)
 def gaussian_beam(x, z, w0, wavelength):
@@ -20,19 +23,17 @@ def gaussian_beam(x, z, w0, wavelength):
     z_r = np.pi*w0**2/wavelength  # Rayleigh range (diffraction scale)
     
     # Complex beam parameter
-    w_z = w0 * np.sqrt(1 + (z/z_r)**2)      # Beam width at z
-    R_z = z * (1 + (z_r/z)**2)              # Wavefront radius
-    psi = np.arctan(z/z_r)                   # Gouy phase shift
+    w_z = w0 * np.sqrt(1 + (z/z_r)**2) if z != 0 else w0      # Beam width at z
+    R_z = z * (1 + (z_r/z)**2) if z != 0 else float('inf')     # Wavefront radius
+    psi = np.arctan(z/z_r) if z != 0 else 0                   # Gouy phase shift
     
     # Electric field
     amplitude = w0/w_z * np.exp(-(x**2)/(w_z**2))
-    phase = np.exp(-1j*(k*z + k*x**2/(2*R_z) - psi))
+    phase = np.exp(-1*(k*z + k*x**2/(2*R_z) - psi))
     
     return amplitude * phase
 
 # Calculate beam at different propagation distances
-z_positions = [0, 0.05, 0.1]  # Start, middle, end
-fields = {}
 
 for z in z_positions:
     fields[z] = gaussian_beam(x, z, beam_waist, wavelength)
