@@ -1,6 +1,11 @@
 """
-Basic Gaussian Beam Propagation
-Reference: Saleh & Teich Fundamentals of Photonics, Chapter 3
+Fundamental Gaussian Beam Propagation
+Physics: 
+- Gaussian beams are solutions to the paraxial wave equation
+- Key parameters: wavelength, beam waist (w0), Rayleigh range (zR)
+- Intensity profile: I(r) = I0 * exp(-2r^2/w(z)^2)
+- Beam width: w(z) = w0 * sqrt(1 + (z/zR)^2)
+- Wavefront radius: R(z) = z * (1 + (zR/z)^2) → infinite at beam waist
 """
 import numpy as np
 import matplotlib.pyplot as plt
