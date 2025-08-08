@@ -12,7 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.fft import fft, fftshift, ifft
 
-# Initialize parameters with explanations
+# Initialize parameters 
 wavelength = 1550e-9  # 1550 nm - standard telecom wavelength (low fiber attenuation)
 beam_waist = 50e-6    # 50 μm beam waist (typical for integrated photonics)
 x_range = 200e-6      # +-200 μm field of view
@@ -21,6 +21,8 @@ fields = {}
 focal_length = 0.05  # 5cm focal length (strong lens for visible effect)
 z_positions = [0, 0.03, 0.05, 0.07, 0.1, 0.15]  # Added positions around lens
 lens_position = 0.05  # Lens located at 5cm
+defect_center = 0  # Center of beam (x=0)
+defect_radius = 20e-6  # 20 micron dust particle
 
 # Create coordinate system
 x = np.linspace(-x_range, x_range, 500)
@@ -32,7 +34,7 @@ def gaussian_beam(x, z, w0, wavelength):
     
     # Complex beam parameter
     w_z = w0 * np.sqrt(1 + (z/z_r)**2) if z != 0 else w0      # Beam width at z
-    R_z = z * (1 + (z_r/z)**2) if z != 0 else float('inf')     # Wavefront radius
+    R_z = z * (1 + (z_r/z)**2) if z != 0 else float('inf')    # Wavefront radius
     psi = np.arctan(z/z_r) if z != 0 else 0                   # Gouy phase shift
     
     # Electric field
@@ -71,6 +73,24 @@ def propagate_fresnel(field, x, wavelength, dz):
     U_new = ifft(U_f * H)
     return U_new
 
+# DEFECT FUNCTIONS 
+
+def add_dust_defect(field, x, defect_center, defect_radius):
+   
+    # Adds a dust particle defect (opaque disk)
+    # param field: Complex optical field
+    # param x: Position array
+    # param defect_center: Center of defect (meters)
+    # param defect_radius: Radius of defect (meters)
+    # return: Modified field
+    
+    # Create mask (1 = transparent, 0 = opaque)
+    mask = np.ones_like(x)
+    distance = np.abs(x - defect_center)
+    mask[distance < defect_radius] = 0  # Block light within defect radius
+    
+    return field * mask
+
 
 # SIMULATION LOOP
 # Calculate beam at different propagation distances
@@ -87,11 +107,12 @@ for z in z_positions:
     if abs(z - lens_position) < 1e-5:  # Floating point comparison tolerance
         current_field = apply_thin_lens(current_field, x, wavelength, focal_length)
         print(f"Applied lens at z={z*100:.1f}cm")
+        current_field = add_dust_defect(current_field, x, defect_center, defect_radius)
     
     fields[z] = current_field.copy()
 
-# Visualization
-# Plot results
+# VISUALIZATION
+
 fig, axs = plt.subplots(2, len(z_positions), figsize=(14, 8), sharex=True)
 
 for i, z in enumerate(z_positions):
@@ -99,11 +120,22 @@ for i, z in enumerate(z_positions):
     beam_width = beam_waist * np.sqrt(1 + (z/zR)**2) * 1e6  # in microns
     
     # Intensity profile
-    axs[0, i].plot(x*1e6, np.abs(fields[z])**2, 'b-')
+    intensity = np.abs(fields[z])**2
+    axs[0, i].plot(x*1e6, intensity, 'b-')
     axs[0, i].set_title(f'z = {z*100:.1f} cm\nBeam Width: {beam_width:.1f} μm')
     axs[0, i].set_xlabel('Position (μm)')
     axs[0, i].set_ylabel('Intensity')
     axs[0, i].grid(True, alpha=0.3)
+
+    # Highlight defect region at lens position
+    if abs(z - lens_position) < 1e-5:
+        axs[0, i].fill_betweenx(
+            [0, np.max(intensity)*1.1],
+            (defect_center - defect_radius)*1e6,
+            (defect_center + defect_radius)*1e6,
+            color='red', alpha=0.2, label='Dust Defect'
+        )
+        axs[0, i].legend()
     
     # Phase profile
     axs[1, i].plot(x*1e6, np.angle(fields[z]), 'r-')
@@ -111,8 +143,8 @@ for i, z in enumerate(z_positions):
     axs[1, i].set_ylabel('Phase (rad)')
     axs[1, i].grid(True, alpha=0.3)
 
-plt.suptitle('Gaussian Beam Propagation with Lens Focusing\n'
+plt.suptitle(f'Gaussian Beam with Lens and {defect_radius*1e6:.0f}μm Dust Defect\n'
              f'Wavelength: {wavelength*1e9} nm | Lens Focal Length: {focal_length*100:.1f} cm', 
-             fontsize=14, y=0.98)
+             fontsize=16)
 plt.tight_layout()
 plt.show()
