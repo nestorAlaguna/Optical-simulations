@@ -7,17 +7,20 @@ Physics:
 - Beam width: w(z) = w0 * sqrt(1 + (z/zR)^2)
 - Wavefront radius: R(z) = z * (1 + (zR/z)^2) → infinite at beam waist
 """
+
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.fft import fft, fftshift, ifft
 
 # Initialize parameters with explanations
 wavelength = 1550e-9  # 1550 nm - standard telecom wavelength (low fiber attenuation)
 beam_waist = 50e-6    # 50 μm beam waist (typical for integrated photonics)
-distance = 0.1        # 10 cm propagation distance
 x_range = 200e-6      # +-200 μm field of view
-x_points = 500        # Spatial resolution
-z_positions = [0, 0.05, 0.1]  # Start, middle, end
+# z_positions = [0, 0.05, 0.1]  # Start, middle, end
 fields = {}
+focal_length = 0.05  # 5cm focal length (strong lens for visible effect)
+z_positions = [0, 0.03, 0.05, 0.07, 0.1, 0.15]  # Added positions around lens
+lens_position = 0.05  # Lens located at 5cm
 
 # Create coordinate system
 x = np.linspace(-x_range, x_range, 500)
@@ -38,25 +41,78 @@ def gaussian_beam(x, z, w0, wavelength):
     
     return amplitude * phase
 
+
+# LENS FUNCTIONS 
+
+def apply_thin_lens(field, x, wavelength, focal_length):
+   
+    # Applies a thin lens phase transformation
+    # Physics: Creates quadratic phase delay to focus light
+    # Formula: φ(x) = - (π * x²) / (λ * f)
+    
+    k = 2 * np.pi / wavelength
+    lens_phase = np.exp(-1 * k * x**2 / (2 * focal_length))
+    return field * lens_phase
+
+def propagate_fresnel(field, x, wavelength, dz):
+   
+    # Fresnel diffraction for beam propagation
+    # Uses Fourier transform for efficient calculation
+    
+    dx = x[1] - x[0]
+    N = len(x)
+    fx = np.fft.fftfreq(N, dx)  # Spatial frequencies
+    
+    # Fresnel transfer function
+    H = np.exp(-1 * np.pi * wavelength * dz * fx**2)
+    
+    # Propagate via Fourier transform
+    U_f = fft(field)
+    U_new = ifft(U_f * H)
+    return U_new
+
+
+# SIMULATION LOOP
 # Calculate beam at different propagation distances
 
+current_field = gaussian_beam(x, 0, beam_waist, wavelength)  # Start at z=0
+
 for z in z_positions:
-    fields[z] = gaussian_beam(x, z, beam_waist, wavelength)
+    # Propagate to next position
+    dz = z - (list(fields.keys())[-1] if fields else 0)
+    if dz > 0:
+        current_field = propagate_fresnel(current_field, x, wavelength, dz)
+    
+    # Apply lens at designated position
+    if abs(z - lens_position) < 1e-5:  # Floating point comparison tolerance
+        current_field = apply_thin_lens(current_field, x, wavelength, focal_length)
+        print(f"Applied lens at z={z*100:.1f}cm")
+    
+    fields[z] = current_field.copy()
 
 # Visualization
-plt.figure(figsize=(12, 8))
-for i, z in enumerate(z_positions):
-    plt.subplot(2, 3, i+1)
-    plt.plot(x*1e6, np.abs(fields[z])**2, 'b-')
-    plt.title(f'z = {z*100:.1f} cm')
-    plt.xlabel('x (μm)')
-    plt.ylabel('Intensity')
-    
-    plt.subplot(2, 3, i+4)
-    plt.plot(x*1e6, np.angle(fields[z]), 'r-')
-    plt.xlabel('x (μm)')
-    plt.ylabel('Phase (rad)')
+# Plot results
+fig, axs = plt.subplots(2, len(z_positions), figsize=(14, 8), sharex=True)
 
+for i, z in enumerate(z_positions):
+    zR = np.pi * beam_waist**2 / wavelength
+    beam_width = beam_waist * np.sqrt(1 + (z/zR)**2) * 1e6  # in microns
+    
+    # Intensity profile
+    axs[0, i].plot(x*1e6, np.abs(fields[z])**2, 'b-')
+    axs[0, i].set_title(f'z = {z*100:.1f} cm\nBeam Width: {beam_width:.1f} μm')
+    axs[0, i].set_xlabel('Position (μm)')
+    axs[0, i].set_ylabel('Intensity')
+    axs[0, i].grid(True, alpha=0.3)
+    
+    # Phase profile
+    axs[1, i].plot(x*1e6, np.angle(fields[z]), 'r-')
+    axs[1, i].set_xlabel('Position (μm)')
+    axs[1, i].set_ylabel('Phase (rad)')
+    axs[1, i].grid(True, alpha=0.3)
+
+plt.suptitle('Gaussian Beam Propagation with Lens Focusing\n'
+             f'Wavelength: {wavelength*1e9} nm | Lens Focal Length: {focal_length*100:.1f} cm', 
+             fontsize=14, y=0.98)
 plt.tight_layout()
-plt.suptitle('Gaussian Beam Propagation', y=1.02)
 plt.show()
