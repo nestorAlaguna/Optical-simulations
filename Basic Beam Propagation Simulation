@@ -148,3 +148,114 @@ plt.suptitle(f'Gaussian Beam with Lens and {defect_radius*1e6:.0f}μm Dust Defec
              fontsize=16)
 plt.tight_layout()
 plt.show()
+
+# =====================
+# DEFECT POSITION EXPERIMENT
+# =====================
+
+defect_positions = [-75e-6, -30e-6, 30e-6, 75e-6]  # Positions in microns
+defect_radius = 20e-6  # Fixed 20μm size
+results = {}
+
+for position in defect_positions:
+    # Run simulation with current defect position
+    fields = {}
+    current_field = gaussian_beam(x, 0, beam_waist, wavelength)
+    fields[0] = current_field.copy()
+    
+    for i in range(1, len(z_positions)):
+        z_prev = z_positions[i-1]
+        z_current = z_positions[i]
+        dz = z_current - z_prev
+        
+        current_field = propagate_fresnel(current_field, x, wavelength, dz)
+        
+        if abs(z_current - lens_position) < 1e-5:
+            current_field = apply_thin_lens(current_field, x, wavelength, focal_length)
+            current_field = add_dust_defect(current_field, x, position, defect_radius)
+        
+        fields[z_current] = current_field.copy()
+    
+    results[position] = fields
+
+# =====================
+# VISUALIZE POSITION EFFECTS
+# =====================
+fig, axs = plt.subplots(len(defect_positions), len(z_positions), figsize=(20, 16))
+
+for row, position in enumerate(defect_positions):
+    fields = results[position]
+    for col, z in enumerate(z_positions):
+        intensity = np.abs(fields[z])**2
+        axs[row, col].plot(x*1e6, intensity, 'b-')
+        
+        if abs(z - lens_position) < 1e-5:
+            axs[row, col].fill_betweenx(
+                [0, np.max(intensity)*1.1],
+                (position - defect_radius)*1e6,
+                (position + defect_radius)*1e6,
+                color='red', alpha=0.2
+            )
+        
+        axs[row, col].set_title(f'z={z*100:.1f}cm | Pos={position*1e6:.0f}μm')
+        axs[row, col].set_xlabel('Position (μm)')
+        axs[row, col].grid(True, alpha=0.3)
+        
+        if col == 0:
+            axs[row, col].set_ylabel(f'Pos: {position*1e6:.0f}μm\nIntensity')
+
+plt.suptitle('Effect of Defect Position on Beam Propagation', fontsize=20, y=0.95)
+plt.tight_layout()
+plt.show()
+
+# =====================
+# INTERESTING COMBINATIONS
+# =====================
+combinations = [
+    {'size': 10e-6, 'position': 0, 'label': 'Small Central'},
+    {'size': 40e-6, 'position': 0, 'label': 'Large Central'},
+    {'size': 20e-6, 'position': 50e-6, 'label': 'Medium Offset'},
+    {'size': 30e-6, 'position': -60e-6, 'label': 'Large Edge'}
+]
+
+results = {}
+for combo in combinations:
+    fields = {}
+    current_field = gaussian_beam(x, 0, beam_waist, wavelength)
+    fields[0] = current_field.copy()
+    
+    for i in range(1, len(z_positions)):
+        z_prev = z_positions[i-1]
+        z_current = z_positions[i]
+        dz = z_current - z_prev
+        
+        current_field = propagate_fresnel(current_field, x, wavelength, dz)
+        
+        if abs(z_current - lens_position) < 1e-5:
+            current_field = apply_thin_lens(current_field, x, wavelength, focal_length)
+            current_field = add_dust_defect(
+                current_field, x, 
+                combo['position'], combo['size']
+            )
+        
+        fields[z_current] = current_field.copy()
+    
+    results[combo['label']] = fields
+
+# =====================
+# COMPARATIVE VISUALIZATION AT FOCUS
+# =====================
+focus_z = 0.1  # Focus position
+plt.figure(figsize=(12, 8))
+
+for label, fields in results.items():
+    intensity = np.abs(fields[focus_z])**2
+    plt.plot(x*1e6, intensity, label=label, linewidth=2)
+
+plt.title(f'Beam Profile at Focus (z={focus_z*100:.1f}cm) with Different Defects', fontsize=16)
+plt.xlabel('Position (μm)')
+plt.ylabel('Intensity')
+plt.grid(True, alpha=0.3)
+plt.legend()
+plt.show()
+
