@@ -149,9 +149,9 @@ plt.suptitle(f'Gaussian Beam with Lens and {defect_radius*1e6:.0f}μm Dust Defec
 plt.tight_layout()
 plt.show()
 
-# =====================
+
 # DEFECT POSITION EXPERIMENT
-# =====================
+
 
 defect_positions = [-75e-6, -30e-6, 30e-6, 75e-6]  # Positions in microns
 defect_radius = 20e-6  # Fixed 20μm size
@@ -178,9 +178,9 @@ for position in defect_positions:
     
     results[position] = fields
 
-# =====================
+
 # VISUALIZE POSITION EFFECTS
-# =====================
+
 fig, axs = plt.subplots(len(defect_positions), len(z_positions), figsize=(20, 16))
 
 for row, position in enumerate(defect_positions):
@@ -208,9 +208,9 @@ plt.suptitle('Effect of Defect Position on Beam Propagation', fontsize=20, y=0.9
 plt.tight_layout()
 plt.show()
 
-# =====================
+
 # INTERESTING COMBINATIONS
-# =====================
+
 combinations = [
     {'size': 10e-6, 'position': 0, 'label': 'Small Central'},
     {'size': 40e-6, 'position': 0, 'label': 'Large Central'},
@@ -242,9 +242,9 @@ for combo in combinations:
     
     results[combo['label']] = fields
 
-# =====================
+
 # COMPARATIVE VISUALIZATION AT FOCUS
-# =====================
+
 focus_z = 0.1  # Focus position
 plt.figure(figsize=(12, 8))
 
