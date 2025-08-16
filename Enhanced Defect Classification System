@@ -1,0 +1,123 @@
+import numpy as np
+from skimage.draw import disk, line
+from sklearn.model_selection import train_test_split
+import torch
+from torch.utils.data import Dataset, DataLoader
+
+# =====================
+# DEFECT GENERATION FUNCTIONS
+# =====================
+def add_dust_defect(field, x, center, radius):
+    """Circular opaque defect"""
+    mask = np.ones_like(x)
+    distance = np.abs(x - center)
+    mask[distance < radius] = 0
+    return field * mask
+
+def add_scratch_defect(field, x, start, end, width):
+    """Linear scratch defect"""
+    mask = np.ones_like(x)
+    for i in range(len(x)):
+        if abs(x[i] - start) < width/2 or abs(x[i] - end) < width/2:
+            mask[i] = 0
+        elif (x[i] > start) and (x[i] < end):
+            mask[i] = 0
+    return field * mask
+
+def add_bubble_defect(field, x, center, radius):
+    """Phase distortion defect (coating bubble)"""
+    phase_distortion = np.zeros_like(x)
+    distance = np.abs(x - center)
+    phase_distortion[distance < radius] = np.pi/2  # Quarter-wave distortion
+    return field * np.exp(1j * phase_distortion)
+
+# =====================
+# DATASET GENERATION
+# =====================
+def generate_defect_samples(num_samples=1000):
+    X = []
+    y = []
+    
+    defect_types = ['dust', 'scratch', 'bubble']
+    sizes = ['small', 'medium', 'large']
+    positions = ['center', 'mid', 'edge']
+    
+    for _ in range(num_samples):
+        # Random beam parameters
+        wavelength = np.random.choice([632e-9, 1550e-9])
+        beam_waist = np.random.uniform(40e-6, 60e-6)
+        
+        # Random defect parameters
+        defect_type = np.random.choice(defect_types)
+        size = np.random.choice(sizes)
+        position = np.random.choice(positions)
+        
+        # Convert to physical parameters
+        if size == 'small':
+            radius = np.random.uniform(5e-6, 15e-6)
+            width = 2e-6
+        elif size == 'medium':
+            radius = np.random.uniform(15e-6, 30e-6)
+            width = 5e-6
+        else:  # large
+            radius = np.random.uniform(30e-6, 50e-6)
+            width = 8e-6
+            
+        if position == 'center':
+            center = 0
+            start, end = -50e-6, 50e-6
+        elif position == 'mid':
+            center = np.random.choice([-1,1]) * 40e-6
+            start, end = center-30e-6, center+30e-6
+        else:  # edge
+            center = np.random.choice([-1,1]) * 75e-6
+            start, end = center-20e-6, center+20e-6
+        
+        # Simulate beam with defect
+        x = np.linspace(-100e-6, 100e-6, 256)
+        field = gaussian_beam(x, 0, beam_waist, wavelength)
+        
+        # Apply defect
+        if defect_type == 'dust':
+            field = add_dust_defect(field, x, center, radius)
+        elif defect_type == 'scratch':
+            field = add_scratch_defect(field, x, start, end, width)
+        else:  # bubble
+            field = add_bubble_defect(field, x, center, radius)
+        
+        # Propagate to focus
+        field = propagate_fresnel(field, x, wavelength, focal_length=0.05)
+        
+        # Store intensity and phase
+        X.append(np.stack([np.abs(field)**2, np.angle(field)]))  # 2-channel input
+        y.append([defect_types.index(defect_type), 
+                 sizes.index(size), 
+                 positions.index(position)])
+    
+    return np.array(X), np.array(y)
+
+# Generate dataset
+X, y = generate_defect_samples(5000)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+
+# =====================
+# PYTORCH DATASET
+# =====================
+class OpticsDefectDataset(Dataset):
+    def __init__(self, X, y):
+        self.X = torch.FloatTensor(X)
+        self.y = torch.LongTensor(y)
+        
+    def __len__(self):
+        return len(self.X)
+    
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
+
+train_dataset = OpticsDefectDataset(X_train, y_train)
+test_dataset = OpticsDefectDataset(X_test, y_test)
+
+# Data loaders
+batch_size = 32
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=batch_size)
