@@ -1,0 +1,356 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from skimage.draw import disk, line
+from sklearn.model_selection import train_test_split
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from scipy.fft import fft, ifft
+
+
+# If CUDA is available, print GPU details
+if torch.cuda.is_available():
+    print(f"GPU: {torch.cuda.get_device_name(0)}")  
+else:
+    print("⚠️ GPU not detected (CUDA missing or PyTorch installed without GPU support)")
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"CUDA (GPU) available: {torch.cuda.is_available()}")
+print(device)
+
+# =====================
+# PHYSICS SIMULATION FUNCTIONS
+# =====================
+def gaussian_beam(x, z, w0, wavelength):
+    """Calculate Gaussian beam complex field"""
+    k = 2*np.pi/wavelength
+    zR = np.pi*w0**2/wavelength
+    
+    # Handle z=0 case to avoid division by zero
+    w_z = w0 * np.sqrt(1 + (z/zR)**2) if z != 0 else w0
+    R_z = z * (1 + (zR/z)**2) if z != 0 else float('inf')
+    psi = np.arctan(z/zR) if z != 0 else 0
+    
+    # Electric field = amplitude × phase
+    amplitude = w0/w_z * np.exp(-x**2/w_z**2)
+    phase = np.exp(-1j*(k*z + k*x**2/(2*R_z) - 1j*psi))
+    return amplitude * phase
+
+def propagate_fresnel(field, x, wavelength, dz):
+    """Fresnel diffraction propagation using Fourier transform"""
+    dx = x[1] - x[0]
+    N = len(x)
+    fx = np.fft.fftfreq(N, dx)
+    
+    # Fresnel transfer function
+    H = np.exp(-1j * np.pi * wavelength * dz * fx**2)
+    
+    # Propagate via Fourier transform
+    U_f = fft(field)
+    U_new = ifft(U_f * H)
+    return U_new
+
+def apply_thin_lens(field, x, wavelength, focal_length):
+    """Apply thin lens phase transformation"""
+    k = 2 * np.pi / wavelength
+    lens_phase = np.exp(-1j * k * x**2 / (2 * focal_length))
+    return field * lens_phase
+
+# =====================
+# DEFECT GENERATION FUNCTIONS
+# =====================
+def add_dust_defect(field, x, center, radius):
+    """Circular opaque defect (dust particle)"""
+    mask = np.ones_like(x)
+    distance = np.abs(x - center)
+    mask[distance < radius] = 0
+    return field * mask
+
+def add_scratch_defect(field, x, start, end, width):
+    """Linear scratch defect"""
+    mask = np.ones_like(x)
+    # Create a simple linear mask
+    for i in range(len(x)):
+        dist_to_line = abs(x[i] - (start + end)/2)
+        if dist_to_line < width/2:
+            mask[i] = 0
+    return field * mask
+
+def add_bubble_defect(field, x, center, radius):
+    """Phase distortion defect (coating bubble)"""
+    phase_distortion = np.zeros_like(x)
+    distance = np.abs(x - center)
+    # Gaussian phase distortion
+    phase_distortion = np.exp(-distance**2/(2*radius**2)) * np.pi/2
+    return field * np.exp(1j * phase_distortion)
+
+# =====================
+# DATASET GENERATION (1D DATA)
+# =====================
+def generate_defect_samples_1d(num_samples=1000):
+    X = []
+    y = []
+    
+    defect_types = ['dust', 'scratch', 'bubble']
+    sizes = ['small', 'medium', 'large']
+    positions = ['center', 'mid', 'edge']
+    
+    print(f"Generating {num_samples} defect samples...")
+    
+    for sample_idx in range(num_samples):
+        if (sample_idx + 1) % 500 == 0:
+            print(f"Generated {sample_idx + 1} samples...")
+        
+        # Random beam parameters
+        wavelength = np.random.choice([632e-9, 1550e-9])
+        beam_waist = np.random.uniform(40e-6, 60e-6)
+        focal_length = 0.05
+        
+        # Random defect parameters
+        defect_type = np.random.choice(defect_types)
+        size = np.random.choice(sizes)
+        position = np.random.choice(positions)
+        
+        # Convert to physical parameters
+        if size == 'small':
+            radius = np.random.uniform(5e-6, 15e-6)
+            width = 2e-6
+        elif size == 'medium':
+            radius = np.random.uniform(15e-6, 30e-6)
+            width = 5e-6
+        else:  # large
+            radius = np.random.uniform(30e-6, 50e-6)
+            width = 8e-6
+            
+        if position == 'center':
+            center = 0
+            start, end = -50e-6, 50e-6
+        elif position == 'mid':
+            center = np.random.choice([-1, 1]) * 40e-6
+            start, end = center-30e-6, center+30e-6
+        else:  # edge
+            center = np.random.choice([-1, 1]) * 75e-6
+            start, end = center-20e-6, center+20e-6
+        
+        # Simulate beam with defect
+        x_coords = np.linspace(-100e-6, 100e-6, 128)
+        field = gaussian_beam(x_coords, 0, beam_waist, wavelength)
+        
+        # Apply lens
+        field = apply_thin_lens(field, x_coords, wavelength, focal_length)
+        
+        # Apply defect
+        if defect_type == 'dust':
+            field = add_dust_defect(field, x_coords, center, radius)
+        elif defect_type == 'scratch':
+            field = add_scratch_defect(field, x_coords, start, end, width)
+        else:  # bubble
+            field = add_bubble_defect(field, x_coords, center, radius)
+        
+        # Propagate to focus (10cm total propagation)
+        field = propagate_fresnel(field, x_coords, wavelength, 0.1)
+        
+        # Store intensity and phase as 2-channel 1D data
+        intensity = np.abs(field)**2
+        phase = np.angle(field)
+        
+        # Normalize
+        intensity = (intensity - np.min(intensity)) / (np.max(intensity) - np.min(intensity) + 1e-8)
+        phase = (phase - np.min(phase)) / (np.max(phase) - np.min(phase) + 1e-8)
+        
+        # Stack as 2-channel 1D signal [channels, length]
+        sample = np.stack([intensity, phase], axis=0)  # [2, 128]
+        X.append(sample)
+        y.append([defect_types.index(defect_type), 
+                 sizes.index(size), 
+                 positions.index(position)])
+    
+    print("Dataset generation complete!")
+    print(f"Final dataset shape: {np.array(X).shape}")
+    return np.array(X), np.array(y)
+
+
+# =====================
+# PYTORCH DATASET CLASS (1D DATA)
+# =====================
+class OpticsDefectDataset1D(Dataset):
+    def __init__(self, X, y):
+        print(f"Input X shape: {X.shape}")
+        
+        # X should already be [batch, channels, length]
+        self.X = torch.FloatTensor(X)
+        self.y = torch.LongTensor(y)
+        
+    def __len__(self):
+        return len(self.X)
+    
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
+
+# =====================
+# 1D CNN MODEL (PROPER ARCHITECTURE)
+# =====================
+class DefectClassifier1D(nn.Module):
+    def __init__(self, input_length=128):
+        super().__init__()
+        
+        # 1D Convolutional layers
+        self.conv1 = nn.Conv1d(2, 32, kernel_size=5, padding=2)  # Input: 2 channels
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=5, padding=2)
+        self.conv3 = nn.Conv1d(64, 128, kernel_size=5, padding=2)
+        self.pool = nn.MaxPool1d(2)
+        self.dropout = nn.Dropout(0.25)
+        
+        # Calculate flattened size
+        self.flattened_size = 128 * (input_length // 8)  # After 3 pooling layers
+        
+        # Multi-task heads
+        self.type_head = nn.Sequential(
+            nn.Linear(self.flattened_size, 64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, 3)  # 3 defect types
+        )
+        
+        self.size_head = nn.Sequential(
+            nn.Linear(self.flattened_size, 64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, 3)  # 3 size classes
+        )
+        
+        self.position_head = nn.Sequential(
+            nn.Linear(self.flattened_size, 64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, 3)  # 3 position classes
+        )
+    
+    def forward(self, x):
+        # x shape: [batch, channels, length]
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = self.pool(F.relu(self.conv3(x)))
+        x = self.dropout(x)
+        x = torch.flatten(x, 1)
+        
+        type_pred = self.type_head(x)
+        size_pred = self.size_head(x)
+        position_pred = self.position_head(x)
+        
+        return type_pred, size_pred, position_pred
+
+# =====================
+# TRAINING FUNCTION
+# =====================
+def train_model(model, train_loader, test_loader, epochs=10):
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    criterion = nn.CrossEntropyLoss()
+    
+    train_losses = []
+    val_accuracies = []
+    
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0
+        
+        for X_batch, y_batch in train_loader:
+            optimizer.zero_grad()
+            
+            # Forward pass
+            type_pred, size_pred, position_pred = model(X_batch)
+            
+            # Compute losses
+            type_loss = criterion(type_pred, y_batch[:,0])
+            size_loss = criterion(size_pred, y_batch[:,1])
+            position_loss = criterion(position_pred, y_batch[:,2])
+            total_loss = type_loss + size_loss + position_loss
+            
+            # Backward pass
+            total_loss.backward()
+            optimizer.step()
+            train_loss += total_loss.item()
+        
+        # Validation
+        model.eval()
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for X_batch, y_batch in test_loader:
+                type_pred, size_pred, position_pred = model(X_batch)
+                
+                # Calculate accuracy
+                _, type_pred_labels = torch.max(type_pred, 1)
+                _, size_pred_labels = torch.max(size_pred, 1)
+                _, position_pred_labels = torch.max(position_pred, 1)
+                
+                correct += (type_pred_labels == y_batch[:,0]).sum().item()
+                correct += (size_pred_labels == y_batch[:,1]).sum().item()
+                correct += (position_pred_labels == y_batch[:,2]).sum().item()
+                total += 3 * y_batch.size(0)
+        
+        accuracy = 100 * correct / total
+        avg_loss = train_loss / len(train_loader)
+        
+        train_losses.append(avg_loss)
+        val_accuracies.append(accuracy)
+        
+        print(f'Epoch {epoch+1}/{epochs} | '
+              f'Train Loss: {avg_loss:.4f} | '
+              f'Accuracy: {accuracy:.2f}%')
+    
+    return train_losses, val_accuracies
+
+# =====================
+# MAIN EXECUTION (1D VERSION)
+# =====================
+if __name__ == "__main__":
+    # Generate dataset
+    print("Starting dataset generation...")
+    X, y = generate_defect_samples_1d(500)  # Increased samples
+    
+    print(f"Dataset X shape: {X.shape}")
+    print(f"Dataset y shape: {y.shape}")
+    
+    # Split dataset
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # Create datasets and data loaders
+    train_dataset = OpticsDefectDataset1D(X_train, y_train)
+    test_dataset = OpticsDefectDataset1D(X_test, y_test)
+    
+    batch_size = 32
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size)
+    
+    # Initialize and train model
+    print("Initializing 1D model...")
+    model = DefectClassifier1D(input_length=X.shape[2])
+    
+    # Test a single batch
+    test_batch, test_labels = next(iter(train_loader))
+    print(f"Batch shape: {test_batch.shape}")
+    print(f"Labels shape: {test_labels.shape}")
+    
+    print("Starting training...")
+    train_losses, val_accuracies = train_model(model, train_loader, test_loader, epochs=20)
+    
+    # Plot results
+    plt.figure(figsize=(12, 4))
+    
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses)
+    plt.title('Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    
+    plt.subplot(1, 2, 2)
+    plt.plot(val_accuracies)
+    plt.title('Validation Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy (%)')
+    
+    plt.tight_layout()
+    plt.show()
