@@ -1,0 +1,379 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import train_test_split
+
+
+# If CUDA is available, print GPU details
+if torch.cuda.is_available():
+    print(f"GPU: {torch.cuda.get_device_name(0)}")  
+else:
+    print("⚠️ GPU not detected (CUDA missing or PyTorch installed without GPU support)")
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"CUDA (GPU) available: {torch.cuda.is_available()}")
+print(device)
+
+# =====================
+# 2D PHYSICS SIMULATION FUNCTIONS
+# =====================
+def gaussian_beam_2d(x, y, z, w0, wavelength):
+    """
+    Creates a 2D Gaussian beam profile
+    - Models laser beam propagation using wave optics
+    - w0: beam waist (minimum beam radius)
+    - wavelength: determines diffraction behavior
+    - z: propagation distance (affects beam expansion)
+    """
+    k = 2 * np.pi / wavelength
+    zR = np.pi * w0**2 / wavelength  # Rayleigh range
+    
+    # Beam parameters at distance z
+    w_z = w0 * np.sqrt(1 + (z/zR)**2) if z != 0 else w0
+    R_z = z * (1 + (zR/z)**2) if z != 0 else float('inf')
+    psi = np.arctan(z/zR) if z != 0 else 0
+    
+    # 2D Gaussian profile
+    r_squared = x**2 + y**2
+    amplitude = (w0/w_z) * np.exp(-r_squared / w_z**2)
+    phase = np.exp(-1j * (k*z + k*r_squared/(2*R_z) - psi))
+    
+    return amplitude * phase
+
+def propagate_fresnel_2d(field, x, y, wavelength, dz):
+    """
+    2D Fresnel propagation using Fourier transforms
+    - Models diffraction effects in free space
+    - Uses Fourier optics for computational efficiency
+    - Essential for simulating beam propagation
+    """
+    dx = x[1] - x[0]
+    dy = y[1] - y[0]
+    N = len(x)
+    
+    # Spatial frequencies
+    fx = np.fft.fftfreq(N, dx)
+    fy = np.fft.fftfreq(N, dy)
+    FX, FY = np.meshgrid(fx, fy)
+    
+    # Fresnel transfer function
+    H = np.exp(-1j * np.pi * wavelength * dz * (FX**2 + FY**2))
+    
+    # Propagate via 2D Fourier transform
+    U_f = np.fft.fft2(field)
+    U_new = np.fft.ifft2(U_f * H)
+    
+    return U_new
+
+def apply_thin_lens_2d(field, x, y, wavelength, focal_length):
+    """
+    Applies thin lens phase transformation in 2D
+    - Quadratic phase factor that focuses light
+    - Critical for imaging systems and beam shaping
+    - Phase shift: φ(x,y) = - (π*(x²+y²)) / (λ*f)
+    """
+    k = 2 * np.pi / wavelength
+    r_squared = x**2 + y**2
+    lens_phase = np.exp(-1j * k * r_squared / (2 * focal_length))
+    
+    return field * lens_phase
+# =====================
+# 2D DEFECT GENERATION
+# =====================
+def add_dust_defect_2d(field, x, y, center_x, center_y, radius):
+    """
+    Circular dust particle defect in 2D
+    - Models particulate contamination on optical surfaces
+    - Creates amplitude modulation (blocks light)
+    - Common in manufacturing environments
+    """
+    X, Y = np.meshgrid(x, y)
+    distance = np.sqrt((X - center_x)**2 + (Y - center_y)**2)
+    mask = np.ones_like(field)
+    mask[distance < radius] = 0
+    
+    return field * mask
+
+
+def add_scratch_defect_2d(field, x, y, start_x, start_y, end_x, end_y, width):
+    """
+    Optimized scratch defect with vectorized operations
+    """
+    X, Y = np.meshgrid(x, y)
+    mask = np.ones_like(field)
+    
+    # Vector along scratch direction
+    dx = end_x - start_x
+    dy = end_y - start_y
+    length_squared = dx**2 + dy**2
+    
+    if length_squared > 0:  # Avoid division by zero
+        # Parameter along the line
+        t = ((X - start_x)*dx + (Y - start_y)*dy) / length_squared
+        t = np.clip(t, 0, 1)
+        
+        # Closest point on line segment
+        proj_x = start_x + t * dx
+        proj_y = start_y + t * dy
+        
+        # Distance to line
+        distance = np.sqrt((X - proj_x)**2 + (Y - proj_y)**2)
+        mask[distance < width/2] = 0
+    
+    return field * mask
+
+def add_bubble_defect_2d(field, x, y, center_x, center_y, radius):
+    """
+    Phase distortion defect (coating bubble)
+    - Models imperfections in optical coatings
+    - Creates phase shifts rather than amplitude blocking
+    - More subtle but still damaging to wavefront quality
+    """
+    X, Y = np.meshgrid(x, y)
+    distance = np.sqrt((X - center_x)**2 + (Y - center_y)**2)
+    
+    # Gaussian phase distortion
+    phase_distortion = np.exp(-distance**2/(2*radius**2)) * np.pi/2
+    return field * np.exp(1j * phase_distortion)
+
+
+# =====================
+# 2D DATASET GENERATION (FIXED)
+# =====================
+def generate_2d_defect_samples(num_samples=1000, grid_size=64):
+    """
+    Generates realistic 2D optical defect data
+    """
+    X = []
+    y = []
+    
+    defect_types = ['dust', 'scratch', 'bubble']
+    sizes = ['small', 'medium', 'large']
+    positions = ['center', 'mid', 'edge']
+    
+    # Create 2D coordinate grid
+    x = np.linspace(-100e-6, 100e-6, grid_size)
+    y_coords = np.linspace(-100e-6, 100e-6, grid_size)
+    X_grid, Y_grid = np.meshgrid(x, y_coords)
+    
+    for sample_idx in range(num_samples):
+        if (sample_idx + 1) % 100 == 0:
+            print(f"Generated {sample_idx + 1}/{num_samples} samples...")
+        
+        # Random beam parameters
+        wavelength = 1550e-9
+        beam_waist = np.random.uniform(40e-6, 60e-6)
+        focal_length = 0.05
+        
+        # Random defect parameters
+        defect_type = np.random.choice(defect_types)
+        size = np.random.choice(sizes)
+        position = np.random.choice(positions)
+        
+        # Size parameters
+        if size == 'small':
+            radius = np.random.uniform(5e-6, 15e-6)
+            width = 2e-6
+        elif size == 'medium':
+            radius = np.random.uniform(15e-6, 30e-6)
+            width = 5e-6
+        else:
+            radius = np.random.uniform(30e-6, 50e-6)
+            width = 8e-6
+        
+        # Position parameters
+        if position == 'center':
+            center_x, center_y = 0, 0
+            start_x, start_y = -40e-6, -40e-6
+            end_x, end_y = 40e-6, 40e-6
+        elif position == 'mid':
+            angle = np.random.uniform(0, 2*np.pi)
+            dist = 40e-6
+            center_x, center_y = dist*np.cos(angle), dist*np.sin(angle)
+            start_x, start_y = center_x-30e-6, center_y-30e-6
+            end_x, end_y = center_x+30e-6, center_y+30e-6
+        else:  # edge
+            angle = np.random.uniform(0, 2*np.pi)
+            dist = 75e-6
+            center_x, center_y = dist*np.cos(angle), dist*np.sin(angle)
+            start_x, start_y = center_x-20e-6, center_y-20e-6
+            end_x, end_y = center_x+20e-6, center_y+20e-6
+        
+        # Simulate optical system
+        field = gaussian_beam_2d(X_grid, Y_grid, 0, beam_waist, wavelength)
+        field = apply_thin_lens_2d(field, X_grid, Y_grid, wavelength, focal_length)
+        
+        # Apply defect
+        if defect_type == 'dust':
+            field = add_dust_defect_2d(field, x, y_coords, center_x, center_y, radius)
+        elif defect_type == 'scratch':
+            field = add_scratch_defect_2d(field, x, y_coords, start_x, start_y, end_x, end_y, width)
+        else:  # bubble
+            field = add_bubble_defect_2d(field, x, y_coords, center_x, center_y, radius)
+        
+        # Propagate to focus
+        field = propagate_fresnel_2d(field, x, y_coords, wavelength, 0.1)
+        
+        # Extract intensity and phase
+        intensity = np.abs(field)**2
+        phase = np.angle(field)
+        
+        # Normalize
+        intensity = (intensity - np.min(intensity)) / (np.max(intensity) - np.min(intensity) + 1e-8)
+        phase = (phase + np.pi) / (2*np.pi)  # Convert to [0, 1]
+        
+        # Stack as 2-channel image
+        sample = np.stack([intensity, phase], axis=0)  # [channels, height, width]
+        X.append(sample)
+        y.append([defect_types.index(defect_type), sizes.index(size), positions.index(position)])
+    
+    return np.array(X), np.array(y)
+# =====================
+# 2D CNN MODEL
+# =====================
+class DefectClassifier2D(nn.Module):
+    """
+    2D CNN for optical defect classification
+    - Multi-task learning: classifies type, size, position simultaneously
+    - Shared feature extractor: efficient parameter usage
+    - Batch normalization: stabilizes training
+    - Dropout: prevents overfitting
+    """
+    def __init__(self, input_size=64):
+        super().__init__()
+        
+        # Feature extraction backbone
+        self.features = nn.Sequential(
+            # Block 1
+            nn.Conv2d(2, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            
+            # Block 2
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            
+            # Block 3
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            
+            # Block 4
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1)
+        )
+        
+        # Multi-task classification heads
+        self.type_head = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(128, 3)  # dust, scratch, bubble
+        )
+        
+        self.size_head = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(128, 3)  # small, medium, large
+        )
+        
+        self.position_head = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(128, 3)  # center, mid, edge
+        )
+    
+    def forward(self, x):
+        features = self.features(x)
+        features = features.view(features.size(0), -1)
+        
+        type_pred = self.type_head(features)
+        size_pred = self.size_head(features)
+        position_pred = self.position_head(features)
+        
+        return type_pred, size_pred, position_pred
+
+# =====================
+# COMPLETE TRAINING FUNCTION
+# =====================
+def train_2d_model():
+    # Generate dataset (start with smaller size for testing)
+    print("Generating 2D dataset...")
+    X, y = generate_2d_defect_samples(100, grid_size=64)  # Start with 100 samples
+    
+    print(f"Dataset shape: X={X.shape}, y={y.shape}")
+    
+    # Split and create dataloaders
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # Convert to PyTorch tensors
+    X_train_tensor = torch.FloatTensor(X_train)
+    y_train_tensor = torch.LongTensor(y_train)
+    X_test_tensor = torch.FloatTensor(X_test)
+    y_test_tensor = torch.LongTensor(y_test)
+    
+    # Create datasets
+    train_dataset = torch.utils.data.TensorDataset(X_train_tensor, y_train_tensor)
+    test_dataset = torch.utils.data.TensorDataset(X_test_tensor, y_test_tensor)
+    
+    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)  # Smaller batch size
+    test_loader = DataLoader(test_dataset, batch_size=8)
+    
+    # Initialize model
+    model = DefectClassifier2D(input_size=64)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss()
+    
+    # Training loop
+    for epoch in range(10):  # Fewer epochs for testing
+        model.train()
+        total_loss = 0
+        
+        for batch_X, batch_y in train_loader:
+            optimizer.zero_grad()
+            
+            type_pred, size_pred, position_pred = model(batch_X)
+            
+            loss = (criterion(type_pred, batch_y[:,0]) +
+                   criterion(size_pred, batch_y[:,1]) +
+                   criterion(position_pred, batch_y[:,2]))
+            
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        
+        # Validation
+        model.eval()
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for batch_X, batch_y in test_loader:
+                type_pred, size_pred, position_pred = model(batch_X)
+                
+                correct += (type_pred.argmax(1) == batch_y[:,0]).sum().item()
+                correct += (size_pred.argmax(1) == batch_y[:,1]).sum().item()
+                correct += (position_pred.argmax(1) == batch_y[:,2]).sum().item()
+                total += 3 * batch_y.size(0)
+        
+        accuracy = 100 * correct / total if total > 0 else 0
+        print(f'Epoch {epoch+1}: Loss={total_loss/len(train_loader):.4f}, Accuracy={accuracy:.2f}%')
+    
+    return model
+
+# Run training
+model = train_2d_model()
+
+
+    
