@@ -1,6 +1,7 @@
 # Optical Defect Detection Simulation Suite
 
 This repository contains a comprehensive suite of optical simulation tools for modeling Gaussian beam propagation, lens systems, and defect detection using both 1D and 2D approaches. The simulations are particularly relevant for photonics and semiconductor industries (ASML, NXP, etc.).
+
 ## 📁 Files Overview
 
 **1. Basic_Beam_Propagation_Simulation.py**
@@ -138,7 +139,7 @@ Innovation Points
 
 ## 📚 Learning Outcomes
 
-Through this project, you'll gain expertise in:
+Through this project, I gain expertise in:
 
     Optical physics and wave propagation
 
