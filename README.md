@@ -94,7 +94,6 @@ Physics Accuracy:
 
 
 
-## 🚀 Key Features for Interviews
 Technical Depth
 
     Wave Optics Foundation: Based on Saleh & Teich photonics principles
