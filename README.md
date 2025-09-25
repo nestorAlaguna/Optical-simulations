@@ -2,7 +2,7 @@
 
 This repository contains a comprehensive suite of optical simulation tools for modeling Gaussian beam propagation, lens systems, and defect detection using both 1D and 2D approaches. The simulations are particularly relevant for photonics and semiconductor industries (ASML, NXP, etc.).
 
-## 📁 Files Overview
+## Files Overview
 
 **1. Basic_Beam_Propagation_Simulation.py**
 
@@ -118,7 +118,7 @@ Innovation Points
 
     Real-World Relevance: Direct industrial applications
 
-## 📊 Performance Metrics
+## Performance Metrics
 
     Defect Type Accuracy: >90% (dust vs scratch vs bubble)
 
@@ -128,7 +128,7 @@ Innovation Points
 
     Training Efficiency: Rapid convergence with physics-based initialization
 
-## 🛠️ Usage
+## Usage
 
     Basic Simulation: Run Basic_Beam_Propagation_Simulation.py to understand fundamental optics
 
@@ -136,7 +136,7 @@ Innovation Points
 
     2D Analysis: Run Enhanced_Defect_Classification_Simulation_2D.py for full 2D optical field modeling
 
-## 📚 Learning Outcomes
+## Learning Outcomes
 
 Through this project, I gain expertise in:
 
